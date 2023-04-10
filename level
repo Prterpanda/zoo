@@ -1,0 +1,795 @@
+  // Decompiled with JetBrains decompiler
+  // Type: LevelSpawner
+  // Assembly: Assembly-CSharp, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null
+  // MVID: 053FD8A0-582C-4939-B8AF-FDE17CE0AA40
+  // Assembly location: C:\Users\yw0329\Desktop\疯狂动物园\assets\bin\Data\Managed\Assembly-CSharp.dll
+
+  using I2.Loc;
+  using System;
+  using System.Collections.Generic;
+  using UnityEngine;
+  using UnityEngine.UI;
+  using Yodo1.Save;
+  using Yodo1.Save.CloudPrefs;
+
+  public class LevelSpawner : Singleton<LevelSpawner>
+  {
+    public WorldDef[] worldDefArray;
+    private CloudInt _worldsUnlocked;
+    private CloudInt _selectedWorld;
+    public CloudInt[] bestDistances;
+    public CloudInt[] missionsInWorld;
+    public WorldDef currentWorld;
+    public int currentZone;
+    public PositionalAnimalSpawner positionalAnimalSpawnerPrefab;
+    private int currentZProgress;
+    private LevelChunk nextChunk;
+    private bool nextChunkIsFlipped;
+    private int currentXLeft = -20;
+    private int currentXRight = 20;
+    private bool leftIsUp = true;
+    private bool rightIsUp = true;
+    private int standardTransitionSectionLength = 3;
+    private bool nextChunkIsTransition;
+    private int sideTileLength = 16;
+    public int zoneLength = 1000;
+    private List<GameObject> greeblesSpawnedThisSection = new List<GameObject>();
+    private List<Obstacle> obstaclesSpawnedThisSection = new List<Obstacle>();
+    private List<GameObject> objectsSpawnedThisSection = new List<GameObject>();
+    private List<GameObject> objectsToCombineThisSection = new List<GameObject>();
+    private List<GameObject> objectsZoneTransition = new List<GameObject>();
+    private List<GameObject> objectsNest = new List<GameObject>();
+    [NonSerialized]
+    public List<float> transitionLocations = new List<float>();
+    public List<SpawnBlock> currentBlocks = new List<SpawnBlock>();
+    private bool firstChunkSpawned;
+    private LevelChunk prevChunk;
+    private LevelChunk prevPrevChunk;
+    private GameObject FarthestDistenceFlag;
+    private float howFarInFrontToSpawn;
+    private int bestDistance;
+
+    public CloudInt worldsUnlocked
+    {
+      get
+      {
+        if (this._worldsUnlocked == null)
+          this._worldsUnlocked = new CloudInt(nameof (worldsUnlocked), 0, PersistenceType.Highest);
+        return this._worldsUnlocked;
+      }
+    }
+
+    public ShipLevelUpgrade currentWorldShipLevel => this.currentWorld.shipLevelUpgrades[Singleton<ShipLevelManager>.Instance.shipUpgradeLevels[(int) this.currentWorld.areaNameEnum].Value];
+
+    public CloudInt selectedWorld
+    {
+      get
+      {
+        if (this._selectedWorld == null)
+          this._selectedWorld = new CloudInt(nameof (selectedWorld), PersistenceType.HighestAndLatest);
+        return this._selectedWorld;
+      }
+    }
+
+    public ZoneDef currentZoneDef => this.currentWorld.zoneDefs[this.currentZone];
+
+    private void Awake()
+    {
+      this.bestDistances = new CloudInt[this.worldDefArray.Length];
+      for (int index = 0; index < this.worldDefArray.Length; ++index)
+        this.bestDistances[index] = new CloudInt("bestDistance" + this.worldDefArray[index].areaNameEnum.ToString(), 0, PersistenceType.Highest);
+      this.missionsInWorld = new CloudInt[this.worldDefArray.Length];
+      for (int index = 0; index < this.worldDefArray.Length; ++index)
+        this.missionsInWorld[index] = new CloudInt("missionsInWorld" + this.worldDefArray[index].areaNameEnum.ToString(), 0, PersistenceType.Highest);
+    }
+
+    private void Update()
+    {
+      if (Singleton<GM>.Instance.gameState != GameState.Game)
+        return;
+      this.howFarInFrontToSpawn = 0.0f;
+      this.howFarInFrontToSpawn = Singleton<TutorialController>.Instance.state != TutorialState.active ? 140f : (this.currentZone != 0 ? 200f : 90f);
+      this.bestDistance = Singleton<LevelSpawner>.Instance.bestDistances[(int) Singleton<LevelSpawner>.Instance.currentWorld.areaNameEnum].Value;
+      if (Singleton<RunDistenceAnalytic>.Instance.iAttemptTime.Value > 0 && this.bestDistance > 0 && Singleton<Player>.Instance.state != PlayerState.crashed)
+      {
+        if (!Singleton<BossMissionManager>.Instance.bossMissionActivated && (double) Singleton<Player>.Instance.transform.position.z > (double) this.bestDistance - (double) this.howFarInFrontToSpawn && (double) Singleton<Player>.Instance.transform.position.z < (double) this.bestDistance + (double) this.howFarInFrontToSpawn)
+        {
+          if ((UnityEngine.Object) null == (UnityEngine.Object) this.FarthestDistenceFlag)
+          {
+            this.FarthestDistenceFlag = UnityEngine.Object.Instantiate(UnityEngine.Resources.Load("Yodo1/Prefabs/UI/FarthestDistenceFlag")) as GameObject;
+            PathState pathStateAt = this.GetPathStateAt((float) this.bestDistance);
+            string str = ScriptLocalization.Get("HighScoreFlagHint");
+            this.FarthestDistenceFlag.transform.FindChild("Canvas/Zone Title").GetComponent<Text>().text = str + " " + this.bestDistance.ToString() + ScriptLocalization.Get("Meter");
+            this.FarthestDistenceFlag.transform.position = new Vector3(pathStateAt.pathMiddle, 0.1f, (float) this.bestDistance);
+          }
+        }
+        else if ((UnityEngine.Object) null != (UnityEngine.Object) this.FarthestDistenceFlag)
+          UnityEngine.Object.Destroy((UnityEngine.Object) this.FarthestDistenceFlag);
+      }
+      while ((double) Singleton<Player>.Instance.transform.position.z > (double) this.currentZProgress - (double) this.howFarInFrontToSpawn)
+      {
+        if ((UnityEngine.Object) this.nextChunk == (UnityEngine.Object) null)
+          this.nextChunk = this.GetNextChunk();
+        if ((double) this.nextChunk.startRight.position.x - (double) this.nextChunk.startLeft.position.x != (double) (this.currentXRight - this.currentXLeft) || this.nextChunkIsTransition || !this.CheckIfCliffsAlign())
+        {
+          this.SpawnProcGenChunk((int) ((double) this.nextChunk.startRight.position.x - (double) this.nextChunk.startLeft.position.x));
+          if (this.nextChunkIsTransition)
+          {
+            this.SpawnChunk(this.nextChunk);
+            this.nextChunk = this.GetNextChunk();
+          }
+        }
+        else
+        {
+          this.SpawnChunk(this.nextChunk);
+          this.nextChunk = this.GetNextChunk();
+        }
+      }
+      if (this.currentBlocks.Count <= 0 || (double) this.currentBlocks[0].zFinishPos >= (double) Singleton<Player>.Instance.transform.position.z - 150.0)
+        return;
+      this.RecycleBlock(this.currentBlocks[0]);
+      this.currentBlocks.RemoveAt(0);
+    }
+
+    public void RecycleBlock(SpawnBlock block)
+    {
+      if (block.wasPrecombined)
+      {
+        block.root.Recycle();
+      }
+      else
+      {
+        RuntimeMeshBatcher.UncombineMeshes(block.root, true);
+        for (int index = 0; index < block.greebles.Length; ++index)
+          block.greebles[index].Recycle();
+      }
+      for (int index = 0; index < block.obstacles.Length; ++index)
+      {
+        if (block.obstacles[index].smashed)
+          block.obstacles[index].TurnOnRenderers();
+        if (!block.wasPrecombined || !block.obstacles[index].isLevelEdge)
+        {
+          block.obstacles[index].gameObject.Recycle();
+          block.obstacles[index].animalOnTop = (Animal) null;
+          block.obstacles[index].nestOnTop = (GameObject) null;
+        }
+      }
+      for (int index = 0; index < block.objects.Length; ++index)
+        block.objects[index].Recycle();
+      if (block.wasPrecombined)
+        return;
+      UnityEngine.Object.Destroy((UnityEngine.Object) block.root);
+    }
+
+    private void SpawnChunk(LevelChunk chunk)
+    {
+      if (this.nextChunkIsFlipped)
+        chunk.transform.SetLocalScaleX(-1f);
+      else
+        chunk.transform.SetLocalScaleX(1f);
+      chunk.transform.position = new Vector3((float) ((this.currentXLeft + this.currentXRight) / 2), 0.0f, (float) this.currentZProgress);
+      chunk.gameObject.SetActive(true);
+      chunk.BuildAllChildren();
+      GameObject preCombinedSection = chunk.chunkCombinedPrefab.Spawn(chunk.transform.position);
+      this.currentZProgress = (int) chunk.endLeft.position.z;
+      if (!this.nextChunkIsFlipped)
+      {
+        this.currentXLeft = (int) chunk.endLeft.position.x;
+        this.currentXRight = (int) chunk.endRight.position.x;
+        preCombinedSection.transform.SetLocalScaleX(1f);
+        this.leftIsUp = chunk.endLeftUp;
+        this.rightIsUp = chunk.endRightUp;
+      }
+      else
+      {
+        this.currentXLeft = (int) chunk.endRight.position.x;
+        this.currentXRight = (int) chunk.endLeft.position.x;
+        chunk.transform.SetLocalScaleX(1f);
+        preCombinedSection.transform.SetLocalScaleX(-1f);
+        this.leftIsUp = chunk.endRightUp;
+        this.rightIsUp = chunk.endLeftUp;
+      }
+      preCombinedSection.SetActive(true);
+      chunk.gameObject.SetActive(false);
+      if (this.nextChunkIsTransition)
+      {
+        this.ChangeZone(this.currentZone + 1);
+        this.nextChunkIsTransition = false;
+      }
+      this.CombineSection(preCombinedSection, (List<Obstacle>) null, (List<Obstacle>) null);
+    }
+
+    private void SpawnProcGenChunk(int targetWidth)
+    {
+      int currentZprogress = this.currentZProgress;
+      int num1 = 0;
+      if (this.nextChunkIsFlipped && (this.leftIsUp != this.nextChunk.startRightUp || this.rightIsUp != this.nextChunk.startLeftUp) || !this.nextChunkIsFlipped && (this.leftIsUp != this.nextChunk.startLeftUp || this.rightIsUp != this.nextChunk.startRightUp))
+        num1 = 1;
+      int num2 = !this.nextChunkIsTransition ? this.standardTransitionSectionLength : (int) (((double) this.zoneLength - ((double) this.currentZProgress + (double) Singleton<Player>.Instance.cannonDist + (double) this.nextChunk.GetLength() - 16.0) % (double) this.zoneLength) / (double) this.sideTileLength) - num1;
+      int num3 = 1;
+      while (num2 > 4)
+      {
+        num2 -= 4;
+        ++num3;
+      }
+      this.obstaclesSpawnedThisSection.Clear();
+      this.objectsToCombineThisSection.Clear();
+      this.greeblesSpawnedThisSection.Clear();
+      this.objectsSpawnedThisSection.Clear();
+      List<Obstacle> leftSideObstacles = new List<Obstacle>();
+      List<Obstacle> rightSideObstacles = new List<Obstacle>();
+      for (int index1 = 0; index1 < num3; ++index1)
+      {
+        int[] numArray = new int[num2 + num2];
+        int num4 = 0;
+        for (int index2 = 0; index2 < numArray.Length; ++index2)
+        {
+          numArray[index2] = UnityEngine.Random.Range(-2, 3) * 2;
+          num4 += numArray[index2];
+        }
+        int num5 = targetWidth - (this.currentXRight - this.currentXLeft) - num4;
+        int index3 = UnityEngine.Random.Range(0, numArray.Length);
+        for (int index4 = 0; num5 != 0 && index4 < numArray.Length * 4; ++index4)
+        {
+          if (num5 > 0 && numArray[index3] != 4)
+          {
+            numArray[index3] += 2;
+            num4 += 2;
+          }
+          else if (num5 < 0 && numArray[index3] != -4)
+          {
+            numArray[index3] -= 2;
+            num4 -= 2;
+          }
+          index3 = (index3 + 1) % numArray.Length;
+          num5 = targetWidth - (this.currentXRight - this.currentXLeft) - num4;
+        }
+        Obstacle obstacle = (Obstacle) null;
+        for (int index5 = 0; index5 < num2; ++index5)
+        {
+          if (numArray[index5 * 2] == -4)
+          {
+            obstacle = !this.leftIsUp ? this.currentWorld.sideObstacleNarrow4Low[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleNarrow4Low.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXLeft, 0.0f, (float) (this.currentZProgress + index5 * this.sideTileLength))) : this.currentWorld.sideObstacleNarrow4[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleNarrow4.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXLeft, 0.0f, (float) (this.currentZProgress + index5 * this.sideTileLength)));
+            this.currentXLeft += 4;
+            obstacle.transform.SetLocalScaleX(1f);
+          }
+          else if (numArray[index5 * 2] == -2)
+          {
+            obstacle = !this.leftIsUp ? this.currentWorld.sideObstacleNarrow2Low[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleNarrow2Low.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXLeft, 0.0f, (float) (this.currentZProgress + index5 * this.sideTileLength))) : this.currentWorld.sideObstacleNarrow2[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleNarrow2.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXLeft, 0.0f, (float) (this.currentZProgress + index5 * this.sideTileLength)));
+            this.currentXLeft += 2;
+            obstacle.transform.SetLocalScaleX(1f);
+          }
+          else if (numArray[index5 * 2] == 0)
+          {
+            obstacle = !this.leftIsUp ? this.currentWorld.sideObstacleStraightLow[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleStraightLow.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXLeft, 0.0f, (float) (this.currentZProgress + index5 * this.sideTileLength))) : this.currentWorld.sideObstacleStraight[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleStraight.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXLeft, 0.0f, (float) (this.currentZProgress + index5 * this.sideTileLength)));
+            obstacle.transform.SetLocalScaleX(1f);
+          }
+          else if (numArray[index5 * 2] == 2)
+          {
+            obstacle = !this.leftIsUp ? this.currentWorld.sideObstacleWiden2Low[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleWiden2Low.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXLeft, 0.0f, (float) (this.currentZProgress + index5 * this.sideTileLength))) : this.currentWorld.sideObstacleWiden2[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleWiden2.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXLeft, 0.0f, (float) (this.currentZProgress + index5 * this.sideTileLength)));
+            this.currentXLeft -= 2;
+            obstacle.transform.SetLocalScaleX(1f);
+          }
+          else if (numArray[index5 * 2] == 4)
+          {
+            obstacle = !this.leftIsUp ? this.currentWorld.sideObstacleWiden4Low[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleWiden4Low.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXLeft, 0.0f, (float) (this.currentZProgress + index5 * this.sideTileLength))) : this.currentWorld.sideObstacleWiden4[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleWiden4.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXLeft, 0.0f, (float) (this.currentZProgress + index5 * this.sideTileLength)));
+            this.currentXLeft -= 4;
+            obstacle.transform.SetLocalScaleX(1f);
+          }
+          leftSideObstacles.Add(obstacle);
+        }
+        for (int index6 = 0; index6 < num2; ++index6)
+        {
+          if (numArray[index6 * 2 + 1] == -4)
+          {
+            obstacle = !this.rightIsUp ? this.currentWorld.sideObstacleNarrow4Low[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleNarrow4Low.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXRight, 0.0f, (float) (this.currentZProgress + index6 * this.sideTileLength))) : this.currentWorld.sideObstacleNarrow4[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleNarrow4.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXRight, 0.0f, (float) (this.currentZProgress + index6 * this.sideTileLength)));
+            this.currentXRight -= 4;
+            obstacle.transform.SetLocalScaleX(-1f);
+          }
+          else if (numArray[index6 * 2 + 1] == -2)
+          {
+            obstacle = !this.rightIsUp ? this.currentWorld.sideObstacleNarrow2Low[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleNarrow2Low.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXRight, 0.0f, (float) (this.currentZProgress + index6 * this.sideTileLength))) : this.currentWorld.sideObstacleNarrow2[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleNarrow2.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXRight, 0.0f, (float) (this.currentZProgress + index6 * this.sideTileLength)));
+            this.currentXRight -= 2;
+            obstacle.transform.SetLocalScaleX(-1f);
+          }
+          else if (numArray[index6 * 2 + 1] == 0)
+          {
+            obstacle = !this.rightIsUp ? this.currentWorld.sideObstacleStraightLow[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleStraightLow.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXRight, 0.0f, (float) (this.currentZProgress + index6 * this.sideTileLength))) : this.currentWorld.sideObstacleStraight[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleStraight.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXRight, 0.0f, (float) (this.currentZProgress + index6 * this.sideTileLength)));
+            obstacle.transform.SetLocalScaleX(-1f);
+          }
+          else if (numArray[index6 * 2 + 1] == 2)
+          {
+            obstacle = !this.rightIsUp ? this.currentWorld.sideObstacleWiden2Low[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleWiden2Low.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXRight, 0.0f, (float) (this.currentZProgress + index6 * this.sideTileLength))) : this.currentWorld.sideObstacleWiden2[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleWiden2.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXRight, 0.0f, (float) (this.currentZProgress + index6 * this.sideTileLength)));
+            this.currentXRight += 2;
+            obstacle.transform.SetLocalScaleX(-1f);
+          }
+          else if (numArray[index6 * 2 + 1] == 4)
+          {
+            obstacle = !this.rightIsUp ? this.currentWorld.sideObstacleWiden4Low[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleWiden4Low.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXRight, 0.0f, (float) (this.currentZProgress + index6 * this.sideTileLength))) : this.currentWorld.sideObstacleWiden4[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleWiden4.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXRight, 0.0f, (float) (this.currentZProgress + index6 * this.sideTileLength)));
+            this.currentXRight += 4;
+            obstacle.transform.SetLocalScaleX(-1f);
+          }
+          rightSideObstacles.Add(obstacle);
+        }
+        this.currentZProgress += this.sideTileLength * num2;
+        num2 = 4;
+      }
+      if (num1 > 0)
+      {
+        Obstacle obstacle = (Obstacle) null;
+        if (this.leftIsUp && (this.nextChunkIsFlipped && this.nextChunk.startRightUp || !this.nextChunkIsFlipped && this.nextChunk.startLeftUp))
+          obstacle = this.currentWorld.sideObstacleStraight[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleStraight.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXLeft, 0.0f, (float) this.currentZProgress));
+        else if (this.leftIsUp)
+        {
+          obstacle = this.currentWorld.sideObstacleHiToLo[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleHiToLo.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXLeft, 0.0f, (float) this.currentZProgress));
+          this.leftIsUp = false;
+        }
+        else if (!this.leftIsUp && (this.nextChunkIsFlipped && !this.nextChunk.startRightUp || !this.nextChunkIsFlipped && !this.nextChunk.startLeftUp))
+          obstacle = this.currentWorld.sideObstacleStraightLow[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleStraightLow.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXLeft, 0.0f, (float) this.currentZProgress));
+        else if (!this.leftIsUp)
+        {
+          obstacle = this.currentWorld.sideObstacleLoToHi[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleLoToHi.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXLeft, 0.0f, (float) this.currentZProgress));
+          this.leftIsUp = true;
+        }
+        obstacle.transform.SetLocalScaleX(1f);
+        leftSideObstacles.Add(obstacle);
+        if (this.rightIsUp && (this.nextChunkIsFlipped && this.nextChunk.startLeftUp || !this.nextChunkIsFlipped && this.nextChunk.startRightUp))
+          obstacle = this.currentWorld.sideObstacleStraight[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleStraight.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXRight, 0.0f, (float) this.currentZProgress));
+        else if (this.rightIsUp)
+        {
+          obstacle = this.currentWorld.sideObstacleHiToLo[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleHiToLo.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXRight, 0.0f, (float) this.currentZProgress));
+          this.rightIsUp = false;
+        }
+        else if (!this.rightIsUp && (this.nextChunkIsFlipped && !this.nextChunk.startLeftUp || !this.nextChunkIsFlipped && !this.nextChunk.startRightUp))
+          obstacle = this.currentWorld.sideObstacleStraightLow[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleStraightLow.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXRight, 0.0f, (float) this.currentZProgress));
+        else if (!this.rightIsUp)
+        {
+          obstacle = this.currentWorld.sideObstacleLoToHi[UnityEngine.Random.Range(0, this.currentWorld.sideObstacleLoToHi.Length)].Spawn<Obstacle>(new Vector3((float) this.currentXRight, 0.0f, (float) this.currentZProgress));
+          this.rightIsUp = true;
+        }
+        obstacle.transform.SetLocalScaleX(-1f);
+        rightSideObstacles.Add(obstacle);
+        this.currentZProgress += this.sideTileLength;
+      }
+      this.SpawnGreeblesAndObstacles((float) currentZprogress, (float) (this.currentZProgress - currentZprogress), true);
+      this.CombineSection((GameObject) null, leftSideObstacles, rightSideObstacles);
+    }
+
+    private LevelChunk GetNextChunk()
+    {
+      LevelChunk nextChunk;
+      if (this.firstChunkSpawned)
+      {
+        LevelChunk levelChunk = this.RandomWithoutRepeating();
+        if ((((double) this.currentZProgress + (double) Singleton<Player>.Instance.cannonDist + (double) levelChunk.GetLength() + (double) (this.standardTransitionSectionLength * this.sideTileLength)) % (double) this.zoneLength > (double) (this.zoneLength - this.currentWorld.zoneDefs[this.currentZone].transitionChunk.GetLength() - 3 * this.standardTransitionSectionLength * this.sideTileLength) || (double) this.currentZProgress + (double) Singleton<Player>.Instance.cannonDist + (double) levelChunk.GetLength() + (double) (this.standardTransitionSectionLength * this.sideTileLength) > (double) ((this.currentZone + 1) * this.zoneLength)) && this.currentZone < this.currentWorld.zoneDefs.Length - 1 && Singleton<TutorialController>.Instance.state != TutorialState.active)
+        {
+          this.nextChunkIsTransition = true;
+          nextChunk = this.currentWorld.zoneDefs[this.currentZone].transitionChunk;
+        }
+        else
+        {
+          this.nextChunkIsTransition = false;
+          this.prevPrevChunk = this.prevChunk;
+          this.prevChunk = levelChunk;
+          nextChunk = levelChunk;
+        }
+      }
+      else
+      {
+        this.currentXLeft = (int) this.currentWorld.startingChunk.startLeft.localPosition.x;
+        this.currentXRight = (int) this.currentWorld.startingChunk.startRight.localPosition.x;
+        this.nextChunkIsTransition = false;
+        this.firstChunkSpawned = true;
+        this.prevPrevChunk = (LevelChunk) null;
+        this.prevChunk = (LevelChunk) null;
+        nextChunk = this.currentWorld.startingChunk;
+      }
+      this.nextChunkIsFlipped = UnityEngine.Random.Range(0, 2) == 1 && !this.nextChunkIsTransition && (UnityEngine.Object) nextChunk != (UnityEngine.Object) this.currentWorld.startingChunk;
+      return nextChunk;
+    }
+
+    private LevelChunk RandomWithoutRepeating()
+    {
+      int max = !Singleton<BossMissionManager>.Instance.bossMissionActivated ? Mathf.Min(this.currentWorld.shipLevelUpgrades[Mathf.Max(0, Singleton<ShipLevelManager>.Instance.shipUpgradeLevels[(int) this.currentWorld.areaNameEnum].Value - 1)].includedLevelChunksPerZone[this.currentZone], this.currentWorld.zoneDefs[this.currentZone].levelChunks.Length) : this.currentWorld.zoneDefs[this.currentZone].levelChunks.Length;
+      int index1 = UnityEngine.Random.Range(0, max);
+      for (int index2 = 0; index2 < max; ++index2)
+      {
+        LevelChunk levelChunk = this.currentWorld.zoneDefs[this.currentZone].levelChunks[(index1 + index2) % max];
+        if ((UnityEngine.Object) levelChunk != (UnityEngine.Object) this.prevChunk && (UnityEngine.Object) levelChunk != (UnityEngine.Object) this.prevPrevChunk)
+          return levelChunk;
+      }
+      return this.currentWorld.zoneDefs[this.currentZone].levelChunks[index1];
+    }
+
+    public PathState GetPathStateAt(float zPos)
+    {
+      PathState pathStateAt = new PathState();
+      pathStateAt.isValid = false;
+      float y = 0.05f;
+      float x = Singleton<Player>.Instance.transform.position.x - 50f;
+      RaycastHit hitInfo1;
+      RaycastHit hitInfo2;
+      if (!Physics.Raycast(new Vector3(x, y, zPos), Vector3.right, out hitInfo1, 350f, 1 << LayerMask.NameToLayer("SideObstacle")) && !Physics.Raycast(new Vector3(x - 350f, y, zPos), Vector3.right, out hitInfo1, 350f, 1 << LayerMask.NameToLayer("SideObstacle")) || (double) hitInfo1.transform.lossyScale.x > 0.0 && (!Physics.Raycast(new Vector3(hitInfo1.point.x + 0.1f, y, zPos), Vector3.right, out hitInfo1, 350f, 1 << LayerMask.NameToLayer("SideObstacle")) || (double) hitInfo1.transform.lossyScale.x > 0.0 && (!Physics.Raycast(new Vector3(hitInfo1.point.x + 0.1f, y, zPos), Vector3.right, out hitInfo1, 350f, 1 << LayerMask.NameToLayer("SideObstacle")) || (double) hitInfo1.transform.lossyScale.x > 0.0 && (!Physics.Raycast(new Vector3(hitInfo1.point.x + 0.1f, y, zPos), Vector3.right, out hitInfo1, 350f, 1 << LayerMask.NameToLayer("SideObstacle")) || (double) hitInfo1.transform.lossyScale.x > 0.0))) || !Physics.Raycast(new Vector3(hitInfo1.point.x - 0.1f, y, zPos), Vector3.left, out hitInfo2, 350f, 1 << LayerMask.NameToLayer("SideObstacle")) || (double) hitInfo2.transform.lossyScale.x < 0.0)
+        return pathStateAt;
+      pathStateAt.zPos = zPos;
+      pathStateAt.leftWallX = hitInfo2.point.x;
+      pathStateAt.leftWallAngle = (float) ((double) Mathf.Atan2(hitInfo2.normal.z * hitInfo2.transform.lossyScale.x, hitInfo2.normal.x * hitInfo2.transform.lossyScale.x) * 57.295780181884766 * -1.0);
+      pathStateAt.rightWallX = hitInfo1.point.x;
+      pathStateAt.rightWallAngle = (float) ((double) Mathf.Atan2(hitInfo1.normal.z * hitInfo1.transform.lossyScale.x, hitInfo1.normal.x * hitInfo1.transform.lossyScale.x) * 57.295780181884766 * -1.0);
+      pathStateAt.width = pathStateAt.rightWallX - pathStateAt.leftWallX;
+      pathStateAt.pathMiddle = pathStateAt.leftWallX + pathStateAt.width / 2f;
+      pathStateAt.isValid = true;
+      return pathStateAt;
+    }
+
+    public void LoadWorld(int areaToLoad, bool retry = false, int bossMissionLevel = -1)
+    {
+      this.firstChunkSpawned = false;
+      this.leftIsUp = true;
+      this.rightIsUp = true;
+      this.currentZProgress = -70;
+      this.nextChunkIsTransition = false;
+      this.nextChunk = (LevelChunk) null;
+      if (!retry)
+      {
+        if ((UnityEngine.Object) this.currentWorld != (UnityEngine.Object) null)
+          UnityEngine.Object.Destroy((UnityEngine.Object) this.currentWorld.gameObject);
+        this.currentWorld = UnityEngine.Object.Instantiate<WorldDef>(this.worldDefArray[areaToLoad]);
+      }
+      this.currentXLeft = (int) this.currentWorld.startingChunk.startLeft.localPosition.x;
+      this.currentXRight = (int) this.currentWorld.startingChunk.startRight.localPosition.x;
+      if (Singleton<Player>.Instance.powderAdded)
+        Singleton<Player>.Instance.powderAdded = false;
+      else
+        Singleton<Player>.Instance.cannonDist = 0.0f;
+      this.ChangeZone(Mathf.Min(Mathf.FloorToInt(Singleton<Player>.Instance.cannonDist / (float) this.zoneLength), this.currentWorld.zoneDefs.Length - 1));
+      Singleton<Player>.Instance.currentZone = Mathf.Min(Mathf.FloorToInt(Singleton<Player>.Instance.cannonDist / (float) this.zoneLength), this.currentWorld.zoneDefs.Length - 1);
+      Singleton<LevelSpawner>.Instance.CalculateHerdChanceCount();
+      Singleton<AnimalSpawner>.Instance.LoadWorld();
+      if (!retry)
+      {
+        for (int index = 0; index < this.currentWorld.PrefabsToPool.Length; ++index)
+          this.currentWorld.PrefabsToPool[index].CreatePool(10);
+        for (int index1 = 0; index1 < this.currentWorld.zoneDefs.Length; ++index1)
+        {
+          for (int index2 = 0; index2 < this.currentWorld.zoneDefs[index1].greebles.Length; ++index2)
+            this.currentWorld.zoneDefs[index1].greebles[index2].CreatePool(90);
+        }
+        this.currentWorld.Init(bossMissionLevel);
+        this.PoolCombinedLevelChunks();
+      }
+      if (Singleton<BossMissionManager>.Instance.bossMissionActivated && !retry)
+      {
+        ZoneDef[] zoneDefs = this.currentWorld.zoneDefs;
+        this.currentWorld.zoneDefs = this.currentWorld.bossMissionLevels[Singleton<BossMissionManager>.Instance.bossMissionLevelID].zones;
+        this.currentWorld.bossMissionLevels[Singleton<BossMissionManager>.Instance.bossMissionLevelID].zones = zoneDefs;
+        if ((UnityEngine.Object) this.currentWorld.bossMissionLevels[Singleton<BossMissionManager>.Instance.bossMissionLevelID].startChunkOverride != (UnityEngine.Object) null)
+        {
+          LevelChunk startingChunk = this.currentWorld.startingChunk;
+          this.currentWorld.startingChunk = this.currentWorld.bossMissionLevels[Singleton<BossMissionManager>.Instance.bossMissionLevelID].startChunkOverride;
+          this.currentWorld.bossMissionLevels[Singleton<BossMissionManager>.Instance.bossMissionLevelID].startChunkOverride = startingChunk;
+        }
+        Singleton<LevelSpawner>.Instance.CalculateHerdChanceCount();
+      }
+      Singleton<CameraController>.Instance.SwitchBackgroundMaterial(this.currentWorld.zoneDefs[this.currentZone].groundMaterial);
+      Singleton<SecretAnimalMissions>.Instance.LoadWorld(this.currentWorld.areaNameEnum);
+      if (!retry)
+        return;
+      UnityEngine.Resources.UnloadUnusedAssets();
+    }
+
+    private void PoolCombinedLevelChunks()
+    {
+      if (!Singleton<BossMissionManager>.Instance.bossMissionActivated)
+      {
+        this.currentWorld.startingChunk.chunkCombinedPrefab.CreatePool(1);
+        for (int index1 = 0; index1 < this.currentWorld.zoneDefs.Length; ++index1)
+        {
+          for (int index2 = 0; index2 < this.currentWorld.zoneDefs[index1].levelChunks.Length; ++index2)
+            this.currentWorld.zoneDefs[index1].levelChunks[index2].chunkCombinedPrefab.CreatePool(2);
+          this.currentWorld.zoneDefs[index1].transitionChunk.chunkCombinedPrefab.CreatePool(1);
+        }
+      }
+      else
+      {
+        BossMissionLevel bossMissionLevel = this.currentWorld.bossMissionLevels[Singleton<BossMissionManager>.Instance.bossMissionLevelID];
+        if ((UnityEngine.Object) bossMissionLevel.startChunkOverride != (UnityEngine.Object) null)
+          bossMissionLevel.startChunkOverride.chunkCombinedPrefab.CreatePool(1);
+        else
+          this.currentWorld.startingChunk.chunkCombinedPrefab.CreatePool(1);
+        for (int index3 = 0; index3 < bossMissionLevel.zones.Length; ++index3)
+        {
+          for (int index4 = 0; index4 < bossMissionLevel.zones[index3].levelChunks.Length; ++index4)
+            bossMissionLevel.zones[index3].levelChunks[index4].chunkCombinedPrefab.CreatePool(2);
+          bossMissionLevel.zones[index3].transitionChunk.chunkCombinedPrefab.CreatePool(1);
+        }
+      }
+    }
+
+    public void PackUpWorld(bool retry = false, WorldDef worldOverride = null)
+    {
+      this.transitionLocations.Clear();
+      WorldDef worldDef = !((UnityEngine.Object) worldOverride == (UnityEngine.Object) null) ? worldOverride : this.currentWorld;
+      Singleton<AnimalSpawner>.Instance.PackUpWorld(retry);
+      for (int index = 0; index < this.currentBlocks.Count; ++index)
+        this.RecycleBlock(this.currentBlocks[index]);
+      this.currentBlocks.Clear();
+      this.RecycleBlockObj(this.greeblesSpawnedThisSection, retry);
+      this.RecycleObstacle(this.obstaclesSpawnedThisSection, retry);
+      this.RecycleBlockObj(this.objectsSpawnedThisSection, retry);
+      this.RecycleBlockObj(this.objectsToCombineThisSection, retry);
+      this.greeblesSpawnedThisSection.Clear();
+      this.obstaclesSpawnedThisSection.Clear();
+      this.objectsSpawnedThisSection.Clear();
+      this.objectsToCombineThisSection.Clear();
+      for (int index = 0; index < worldDef.PrefabsToPool.Length; ++index)
+      {
+        worldDef.PrefabsToPool[index].RecycleAll();
+        if (!retry)
+          worldDef.PrefabsToPool[index].DestroyPooled();
+      }
+      for (int index1 = 0; index1 < worldDef.zoneDefs.Length; ++index1)
+      {
+        for (int index2 = 0; index2 < worldDef.zoneDefs[index1].greebles.Length; ++index2)
+        {
+          worldDef.zoneDefs[index1].greebles[index2].RecycleAll();
+          if (!retry)
+            worldDef.zoneDefs[index1].greebles[index2].DestroyPooled();
+        }
+      }
+      this.UnPoolCombinedLevelChunks(retry);
+      this.currentXLeft = (int) worldDef.startingChunk.startLeft.localPosition.x;
+      this.currentXRight = (int) worldDef.startingChunk.startRight.localPosition.x;
+      this.nextChunk = (LevelChunk) null;
+      this.firstChunkSpawned = false;
+      this.nextChunkIsTransition = false;
+      if (retry)
+        return;
+      UnityEngine.Object.Destroy((UnityEngine.Object) this.currentWorld.gameObject);
+      this.currentWorld = (WorldDef) null;
+    }
+
+    private void RecycleBlockObj(List<GameObject> list, bool retry = true)
+    {
+      for (int index = 0; index < list.Count; ++index)
+      {
+        list[index].RecycleAll();
+        list[index].DestroyPooled();
+      }
+    }
+
+    private void RecycleObstacle(List<Obstacle> list, bool retry = true)
+    {
+      for (int index = 0; index < list.Count; ++index)
+      {
+        list[index].RecycleAll<Obstacle>();
+        list[index].DestroyPooled<Obstacle>();
+      }
+    }
+
+    private void UnPoolCombinedLevelChunks(bool retry)
+    {
+      if (!Singleton<BossMissionManager>.Instance.bossMissionActivated)
+      {
+        this.RecycleAndMaybeRemovePool(this.currentWorld.startingChunk.chunkCombinedPrefab, !retry);
+        for (int index1 = 0; index1 < this.currentWorld.zoneDefs.Length; ++index1)
+        {
+          for (int index2 = 0; index2 < this.currentWorld.zoneDefs[index1].levelChunks.Length; ++index2)
+            this.RecycleAndMaybeRemovePool(this.currentWorld.zoneDefs[index1].levelChunks[index2].chunkCombinedPrefab, !retry);
+          this.RecycleAndMaybeRemovePool(this.currentWorld.zoneDefs[index1].transitionChunk.chunkCombinedPrefab, !retry);
+        }
+      }
+      else
+      {
+        BossMissionLevel bossMissionLevel = this.currentWorld.bossMissionLevels[Singleton<BossMissionManager>.Instance.bossMissionLevelID];
+        if ((UnityEngine.Object) bossMissionLevel.startChunkOverride != (UnityEngine.Object) null)
+        {
+          this.RecycleAndMaybeRemovePool(bossMissionLevel.startChunkOverride.chunkCombinedPrefab, !retry);
+          this.RecycleAndMaybeRemovePool(this.currentWorld.startingChunk.chunkCombinedPrefab, !retry);
+        }
+        for (int index3 = 0; index3 < bossMissionLevel.zones.Length; ++index3)
+        {
+          for (int index4 = 0; index4 < bossMissionLevel.zones[index3].levelChunks.Length; ++index4)
+            this.RecycleAndMaybeRemovePool(bossMissionLevel.zones[index3].levelChunks[index4].chunkCombinedPrefab, !retry);
+          this.RecycleAndMaybeRemovePool(bossMissionLevel.zones[index3].transitionChunk.chunkCombinedPrefab, !retry);
+        }
+      }
+    }
+
+    private void RecycleAndMaybeRemovePool(GameObject go, bool removeAsWell)
+    {
+      go.RecycleAll();
+      if (!removeAsWell || !((UnityEngine.Object) null != (UnityEngine.Object) go))
+        return;
+      go.DestroyPooled();
+    }
+
+    private void SpawnGreeblesAndObstacles(float startZPos, float length, bool spawnObstaclesAsWell = false)
+    {
+      Vector3 position1 = new Vector3(-20f, 0.0f, startZPos);
+      float minObstacleDist = this.currentWorld.zoneDefs[this.currentZone].minObstacleDist;
+      float greebleGridSize = this.currentWorld.zoneDefs[this.currentZone].greebleGridSize;
+      bool flag = true;
+      for (int index1 = 0; (double) index1 * (double) greebleGridSize < (double) length; ++index1)
+      {
+        PathState pathStateAt1 = this.GetPathStateAt(startZPos + (float) index1 * greebleGridSize);
+        for (int index2 = 0; (double) pathStateAt1.leftWallX + (double) index2 * (double) greebleGridSize < (double) pathStateAt1.rightWallX; ++index2)
+        {
+          if ((double) UnityEngine.Random.value < (double) this.currentWorld.zoneDefs[this.currentZone].greebleSpawnChance)
+          {
+            Vector2 vector2 = UnityEngine.Random.insideUnitCircle * greebleGridSize * 0.4f;
+            Vector3 position2 = new Vector3(pathStateAt1.leftWallX + ((float) index2 + 0.5f) * greebleGridSize + vector2.x, 0.0f, startZPos + (float) index1 * greebleGridSize + vector2.y);
+            PathState pathStateAt2 = this.GetPathStateAt(position2.z);
+            if ((double) position2.x > (double) pathStateAt2.leftWallX + 1.5 && (double) position2.x < (double) pathStateAt2.rightWallX - 1.5)
+            {
+              int index3 = UnityEngine.Random.Range(0, this.currentWorld.zoneDefs[this.currentZone].greebles.Length);
+              GameObject o = this.currentWorld.zoneDefs[this.currentZone].greebles[index3].Spawn(position2, Quaternion.Euler(new Vector3(0.0f, (float) (UnityEngine.Random.Range(0, 4) * 90), 0.0f)));
+              this.AddGreebleToSectionLists(o);
+              if (index3 < this.currentWorld.zoneDefs[this.currentZone].greebleColourPointers.Length)
+                o.GetComponent<Renderer>().material = this.currentWorld.zoneDefs[this.currentZone].materialPalette[this.currentWorld.zoneDefs[this.currentZone].greebleColourPointers[index3]];
+            }
+          }
+        }
+        if (spawnObstaclesAsWell && (double) index1 * (double) greebleGridSize + (double) startZPos > (double) position1.z + (double) minObstacleDist && (double) index1 * (double) greebleGridSize + (double) startZPos < (double) startZPos + (double) length - 8.0 && (double) UnityEngine.Random.value < (double) this.currentWorld.zoneDefs[this.currentZone].randomObstacleChance)
+        {
+          int index4 = UnityEngine.Random.Range(0, this.currentWorld.zoneDefs[this.currentZone].randomObstacles.Length);
+          float x = UnityEngine.Random.Range(pathStateAt1.leftWallX + 5f, pathStateAt1.rightWallX - 5f);
+          if ((double) x < (double) position1.x - 3.0 || (double) x > (double) position1.x + 3.0 || flag)
+          {
+            position1 = new Vector3(x, 0.0f, (float) index1 * greebleGridSize + startZPos);
+            this.currentWorld.zoneDefs[this.currentZone].randomObstacles[index4].Spawn(position1, Quaternion.Euler(0.0f, (float) (UnityEngine.Random.Range(0, 4) * 90), 0.0f));
+            flag = false;
+          }
+          else
+            flag = true;
+        }
+      }
+    }
+
+    public void CalculateHerdChanceCount()
+    {
+      Singleton<AnimalSpawner>.Instance.currentHerdChanceCount = 0.0f;
+      for (int index = 0; index < this.currentWorld.zoneDefs[Singleton<Player>.Instance.currentZone].herdAnimals.Length; ++index)
+      {
+        if (this.currentWorldShipLevel.animalAllowed(this.currentWorld.zoneDefs[Singleton<Player>.Instance.currentZone].herdAnimals[index].genusName))
+          Singleton<AnimalSpawner>.Instance.currentHerdChanceCount += this.currentWorld.zoneDefs[Singleton<Player>.Instance.currentZone].herdAnimals[index].spawnChanceMultiplier * (1f + Singleton<AnimalSpawner>.Instance.genusArray[(int) this.currentWorld.zoneDefs[Singleton<Player>.Instance.currentZone].herdAnimals[index].genusName].spawnModifier);
+      }
+    }
+
+    public void UnlockWorld()
+    {
+      Debug.Log((object) "UNLOCK WORLD WAS CALLED");
+      ++this.worldsUnlocked.Value;
+      this.SetSelectedWorld(this.worldsUnlocked.Value);
+      Cloud.Provider.Storage.Save();
+    }
+
+    public int GetNextUnlockCost() => Singleton<EconomyManager>.Instance.ProcessCostReduction(this.worldDefArray[this.worldsUnlocked.Value + 1].shipLevelUpgrades[0].cost, this.worldDefArray[this.worldsUnlocked.Value].areaNameEnum);
+
+    public void SetSelectedWorld(int i)
+    {
+      Debug.Log((object) "Set selected world");
+      Singleton<BossMissionManager>.Instance.DeactivateBossMission();
+      this.selectedWorld.Value = i;
+    }
+
+    public void AddObstacleToSectionLists(Obstacle o)
+    {
+      this.obstaclesSpawnedThisSection.Add(o);
+      if (!o.isLevelEdge)
+        return;
+      this.objectsToCombineThisSection.Add(o.gameObject);
+    }
+
+    public void AddGreebleToSectionLists(GameObject o)
+    {
+      this.objectsToCombineThisSection.Add(o);
+      this.greeblesSpawnedThisSection.Add(o);
+    }
+
+    public void AddObjectToSectionLists(GameObject o) => this.objectsSpawnedThisSection.Add(o);
+
+    public void AddZoneTransitionToSectionLists(GameObject go) => this.objectsZoneTransition.Add(go);
+
+    public void AddNestToSectionLists(GameObject go) => this.objectsNest.Add(go);
+
+    public void CombineSection(
+      GameObject preCombinedSection,
+      List<Obstacle> leftSideObstacles,
+      List<Obstacle> rightSideObstacles)
+    {
+      SpawnBlock spawnBlock = new SpawnBlock();
+      spawnBlock.zFinishPos = this.currentZProgress;
+      spawnBlock.obstacles = this.obstaclesSpawnedThisSection.ToArray();
+      spawnBlock.objects = this.objectsSpawnedThisSection.ToArray();
+      spawnBlock.greebles = this.greeblesSpawnedThisSection.ToArray();
+      if ((UnityEngine.Object) preCombinedSection != (UnityEngine.Object) null)
+      {
+        spawnBlock.root = preCombinedSection;
+        spawnBlock.wasPrecombined = true;
+        for (int index = 0; index < spawnBlock.obstacles.Length; ++index)
+        {
+          if (!spawnBlock.obstacles[index].isLevelEdge)
+            spawnBlock.obstacles[index].SetColoursFromZone(this.GetZoneDefAtDepth(spawnBlock.obstacles[index].transform.position.z));
+        }
+      }
+      else
+      {
+        for (int index = 0; index < spawnBlock.obstacles.Length; ++index)
+          spawnBlock.obstacles[index].SetColoursFromZone(this.GetZoneDefAtDepth(spawnBlock.obstacles[index].transform.position.z));
+        ZoneDef zoneDefAtDepth = this.GetZoneDefAtDepth(leftSideObstacles[0].transform.position.z + 1f);
+        if (zoneDefAtDepth.createCustomGroundPlane)
+        {
+          GameObject parentObject = new GameObject();
+          this.SpawnAlpineGroundPlane(Vector3.zero, parentObject, zoneDefAtDepth, leftSideObstacles, rightSideObstacles);
+          this.objectsToCombineThisSection.Add(parentObject);
+        }
+        spawnBlock.root = RuntimeMeshBatcherController.instance.CombineMeshes(this.objectsToCombineThisSection.ToArray());
+        spawnBlock.wasPrecombined = false;
+      }
+      this.greeblesSpawnedThisSection.Clear();
+      this.obstaclesSpawnedThisSection.Clear();
+      this.objectsSpawnedThisSection.Clear();
+      this.objectsToCombineThisSection.Clear();
+      this.currentBlocks.Add(spawnBlock);
+    }
+
+    public void ForceTransitionForTutorial(int zone)
+    {
+      this.ChangeZone(zone);
+      if (zone == 0)
+        this.nextChunk = this.currentWorld.startingChunk;
+      else
+        this.nextChunk = this.currentWorld.zoneDefs[this.currentZone - 1].transitionChunk;
+    }
+
+    private void ChangeZone(int newZoneNum)
+    {
+      this.currentZone = newZoneNum;
+      Singleton<CameraController>.Instance.SwitchOnGroundPlane(!this.currentWorld.zoneDefs[this.currentZone].createCustomGroundPlane);
+    }
+
+    public ZoneDef GetZoneDefAtDepth(float depth)
+    {
+      if (!((UnityEngine.Object) this.currentWorld != (UnityEngine.Object) null))
+        return this.worldDefArray[0].zoneDefs[0];
+      int index = 0;
+      while (index < this.transitionLocations.Count && (double) depth >= (double) this.transitionLocations[index])
+        ++index;
+      return this.currentWorld.zoneDefs[index];
+    }
+
+    public void SpawnAlpineGroundPlane(
+      Vector3 chunkPosition,
+      GameObject parentObject,
+      ZoneDef zone,
+      List<Obstacle> leftSideObjects,
+      List<Obstacle> rightSideObjects)
+    {
+      for (int index = 0; index < leftSideObjects.Count; ++index)
+      {
+        GameObject primitive = GameObject.CreatePrimitive(PrimitiveType.Plane);
+        primitive.transform.position = chunkPosition + new Vector3((float) ((double) leftSideObjects[index].transform.position.x + (double) leftSideObjects[index].alpineGroundPlaneOffset + ((double) rightSideObjects[index].transform.position.x - (double) rightSideObjects[index].alpineGroundPlaneOffset - ((double) leftSideObjects[index].transform.position.x + (double) leftSideObjects[index].alpineGroundPlaneOffset)) / 2.0), 0.0f, leftSideObjects[index].transform.position.z + 8f);
+        primitive.transform.localScale = new Vector3((float) (((double) rightSideObjects[index].transform.position.x - (double) rightSideObjects[index].alpineGroundPlaneOffset - ((double) leftSideObjects[index].transform.position.x + (double) leftSideObjects[index].alpineGroundPlaneOffset)) / 10.0), 0.1f, 1.6f);
+        if ((double) leftSideObjects[index].transform.localScale.z < 0.0)
+          primitive.transform.position += new Vector3(0.0f, 0.0f, -16f);
+        primitive.transform.SetParent(parentObject.transform);
+        MeshRenderer component = primitive.GetComponent<MeshRenderer>();
+        primitive.layer = LayerMask.NameToLayer("Ground");
+        component.material = zone.groundMaterial;
+        component.receiveShadows = true;
+      }
+    }
+
+    private bool CheckIfCliffsAlign()
+    {
+      if (!this.nextChunkIsFlipped)
+      {
+        if (this.leftIsUp == this.nextChunk.startLeftUp && this.rightIsUp == this.nextChunk.startRightUp)
+          return true;
+      }
+      else if (this.leftIsUp == this.nextChunk.startRightUp && this.rightIsUp == this.nextChunk.startLeftUp)
+        return true;
+      return false;
+    }
+  }
